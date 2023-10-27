@@ -1,0 +1,622 @@
+---
+title: "photon_regression_models"
+author: "Hui Xin Ng"
+date: "2022-04-15"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+library("dplyr")
+library("tidyverse")
+library("DescTools")
+library("ggplot2")
+library("readxl")
+library("lme4")
+library("ModelMetrics")
+library("merTools")
+library("lmtest")
+library("emmeans")
+library("haven")
+library("lmerTest")
+library("metaforest")
+library("rstatix")
+library("ech")
+library("labelled")
+ 
+libs <- c("dplyr", "tidyverse", "DescTools", "ggplot2", "readxl", "lme4"
+               , "ModelMetrics", "merTools", "lmtest", "emmeans", "haven", "lmerTest", "metaforest", "rstatix",  'ech', 'labelled')
+#require(libs)
+lapply(libs, require, character.only = TRUE)
+```
+
+```{r}
+replaceSpace <- function(dataframe) {
+   gsub(x = names(dataframe), pattern = " ", replacement = "_") 
+} 
+
+## Helper functions
+getPartialEtaSq<-function(m_fixed) {
+  petasq <- round(as.data.frame(EtaSq(m_fixed))[2],3)
+  return(petasq) }
+
+getClinVarCoeff <- function(m) { # get coefficients
+  as.data.frame(summary(m)$coefficients)[6, ]
+} 
+path = file.path( "Master_BD_080720_withPredictions_withNewHajek_fixed.sav")
+df = read_sav(path)
+
+# Helper function to rename df columns
+replaceSpace <- function(dataframe) {
+  gsub(x = names(dataframe), pattern = " ", replacement = "_") 
+}
+
+df <- df %>% 
+  mutate_if(is.character, list(~na_if(.,""))) %>%
+  filter(!SubjID %in%  c('con_11',  'pat_13')) %>% # drop 2 subjects from Haarman
+  arrange(Site) # arrange by Site number
+
+siteLoc <- read_excel("DescriptiveData_080720_2.xlsx", sheet=3)
+
+names(siteLoc) <- replaceSpace(siteLoc)
+names(df) <- replaceSpace(df) 
+
+df <- merge(df, siteLoc, by=c("PIName","Site" )) # merge 
+df <- df %>% 
+filter(Age <= 75  & Age  >=18)  
+BD_only <- df %>% filter(Dx==1)
+BD_only
+```
+
+```{r}
+mod <- lmer(BrainPAD ~ Dx + Sex + Age + (1|Site) , data = df)
+ 
+# Calculate the correlation between the residuals of the model and x and y
+# no correlation between residuals of the model including Age and Age itself
+resid <- residuals(mod)
+cor.test(resid, df$Age) 
+```
+ 
+```{r}
+ 
+# Create a scatterplot of Brain-PAD vs. Age 
+plot(df$Age, df$BrainPAD,  xlab = "Age", ylab = "Brain-PAD", )
+ 
+
+# Create a scatterplot of residuals vs. Age
+plot(df$Age, residuals(mod), xlab = "Age", ylab = "Brain-PAD Corrected for Age")
+abline(h = 0, lty = 2)
+
+``` 
+
+```{r} 
+ 
+modAge2 <- lmer(BrainPAD ~ Dx + Sex +   Age + Age2 + (1 | Site) , data = df) 
+summary(modAge2)
+
+# Calculate the correlation between the residuals of the model and x and y
+# no correlation between residuals 
+resid <- residuals(modAge2)
+cor.test(resid, df$Age)
+
+
+plot(df$Age, residuals(modAge2), xlab = "Age",   ylab = bquote("Brain-PAD corrected for Age & "~Age^2))
+# Add a horizontal regression line to the scatterplot
+abline(h = 0, lty = 2)
+```
+### Determine if we need to control for any non linear age effects
+
+```{r}
+# Supplementary table 1 
+modAge2Age3 <- lmer(BrainPAD ~ Dx + Sex +   Age + Age2 + Age3 + (1 | Site) , data = df) 
+summary(modAge2Age3)
+
+# Calculate the correlation between the residuals of the model and x and y
+resid <- residuals(modAge2Age3)
+cor.test(resid, df$Age)
+```
+ 
+```{r}
+anova(modAge2, modAge2Age3, test= "chisq")
+```
+
+```{r}
+anova(modAge2, mod, test= "chisq")
+```
+
+### EMMs of  Dx extracted from first basic model
+```{r}
+# estimated marginal means for Dx group
+emm.s <- emmeans(mod, specs = pairwise ~ Dx) 
+Means = round(as.data.frame(emm.s$emmeans), 2)
+Means
+# The EMM of BrainPADs is -0.95 (SE 0.68, CI: -2.34 - 0.44), for HC and
+# +1.42  years (SE 0.66,  CI: 0.05 - 2.78) for BD individuals. 
+
+jpeg(filename = paste0('figures/', 'compare_emmeans_HC_BD.jpeg'), width=600, height=600)
+p <- plot(emm.s, comparisons = TRUE) + theme_classic() + scale_y_discrete("Groups", labels = c("HC",'BD')) + scale_x_continuous("Brain-PAD") +coord_flip()   + theme(
+  axis.title.x = element_text(size = 20),
+  axis.title.y = element_text(size = 20),
+ axis.text.x=element_text(size=18),
+ axis.text.y=element_text(size=18)) #+ggtitle("Mean estimate across groups and 95% CI of BrainPAD")  
+
+# Get the counts for each medication group
+counts <- df %>% 
+  filter(!is.na(Dx)) %>%
+  group_by(Dx) %>% 
+  summarize(count = n())
+ 
+dev.off()
+```
+
+
+
+ 
+### Model accounting for interaction between Dx and Age, Dx and Sex, and Age and Sex, and three way interaction between Dx Age and Sex
+```{r}
+
+modDxAgeSexFull <- lmer(BrainPAD ~ Dx + Sex +  Age  + (Dx*Age) + (Dx*Sex) + (Age*Sex) + (Dx*Age*Sex)+  (1 | Site) , data = df) 
+summary(modDxAgeSexFull)
+
+m1_fixed <- lm(BrainPAD ~ Dx + Sex +  Age  + (Dx*Age) + (Dx*Sex) + (Age*Sex) + (Dx*Age*Sex)+  + Site, data =df)
+summary(m1_fixed)
+print(round(summary(m1_fixed)$r.squared,2))
+# Use anova to get f values 
+getPartialEtaSq(m1_fixed)
+
+```
+
+```{r}
+modDxAgeSexNoThreeWay <- lmer(BrainPAD ~ Dx + Sex +  Age  + (Dx*Age) + (Dx*Sex) + (Age*Sex) +    (1 | Site) , data = df) 
+summary(modDxAgeSexNoThreeWay)
+
+m1_fixed <- lm(BrainPAD ~ Dx + Sex +  Age  + (Dx*Age) + (Dx*Sex) + (Age*Sex) +    Site, data =df)
+summary(m1_fixed)
+print(round(summary(m1_fixed)$r.squared,2))
+# Use anova to get f values 
+getPartialEtaSq(m1_fixed)  
+```
+
+ 
+# get correlation between brain age and age for BD and HC FROM LMM MODEL
+R-squared is a measure of how much of the variability in the response variable is explained by the predictor variables in the model.   
+Sqrt of R-squared is the correlation between the observed and predicted values of the response variable.
+```{r}
+
+# # Correlations between age and brain-PAD for HC and BD are 0.64  and 0.53respectively
+# for (sex in c(1, 2)) {
+# for (dx in c(0, 1)) {
+#   print(dx)
+#   mod <- lmer(BrainPAD ~ Age + Sex + (1|Site), data = df %>% filter(Dx == dx))
+#     r2 <- r.squaredGLMM(mod) 
+#     r2c <-  r2[1, "R2c"]  # Select the marginal R-squared value 
+#     r <- sqrt(r2c)
+#     print(round(r, 2))
+#     if (dx == 0) {
+#       dxTitle = "HC"} else{
+#         dxTitle = "BD"
+#       }
+#     
+#     p <- df%>% filter(Sex==sex, Dx==dx)%>%
+#       ggplot(aes(x = Age, y = BrainPAD, colour = factor(Site) )) + ggtitle(paste('Age vs. Brain-PAD among', dxTitle ))+
+#       geom_point(size = 3, alpha = 0.75)  +
+#       scale_fill_manual(values = rainbow(28))+theme_classic()+labs(y = "Brain-PAD") + geom_smooth(fullrange = T, method = "lm", se=FALSE, color="black", formula = y~x)+
+#       theme(legend.position = "none")+theme(axis.text=element_text(size=12), axis.title=element_text(size=12,face="bold"),plot.title = element_text(size = 12, face = "bold")) + annotate("text", x = 80, y = 40.0, label = paste0('r = ' , round(r, 2)))
+# 
+# jpeg(filename = paste0('figures/',dxTitle,'_' ,'BrainPAD_corr_age.jpeg', width = 1200, height = 1200,  res = 200 ))
+# print(p)
+# dev.off()
+#   }  
+# }
+```
+ 
+# Stepwise removal of interaction terms from three way interaction model
+```{r}
+modNoDxSex <- lmer(BrainPAD ~ Dx + Sex + Age + (Dx*Age) + (Age*Sex) +(1 | Site) , data = df)  
+summary(modNoDxSex)
+
+# modNoAgeSex <- lmer(BrainPAD ~ Dx + Sex + Age + (Dx*Age) + (Dx*Sex) + (1 | Site) , data = df)  
+# modNoDxAge <- lmer(BrainPAD ~ Dx + Sex + Age + (Age*Sex) + (Dx*Sex) + (1 | Site) , data = df)  
+
+fixed_modNoDxSex <- lm(BrainPAD ~ Dx + Sex + Age + (Dx*Age) + (Age*Sex) + Site, data = df)
+summary(fixed_modNoDxSex)
+getPartialEtaSq(fixed_modNoDxSex)
+
+```
+
+
+### Model account for interaction between  Dx and Sex
+```{r}
+modDxSex <- lmer(BrainPAD ~ Dx + Age + Sex  +  Dx*Sex   + (1 | Site), data = df) 
+summary(modDxSex)
+
+#linear model with only fixed effects for Dx*Sex
+m1_fixed <- lm(BrainPAD ~    Dx+ Age + Sex  + Dx*Sex + Site, data =df)
+summary(m1_fixed)
+print(round(summary(m1_fixed)$r.squared,2))
+
+# Use anova to get f values 
+getPartialEtaSq(m1_fixed) 
+```
+
+### Model account for interaction between  Sex and Age
+Which sex has higher/lower brain age - EMM 
+```{r}
+modSexAge <- lmer(BrainPAD ~ Dx + Age + Sex  +  Sex*Age   + (1 | Site), data = df) 
+summary(modSexAge) 
+
+#linear model with only fixed effects for Dx*Sex
+modSexAge_fixed <- lm(BrainPAD ~    Dx+ Age + Sex  +  Sex*Age + Site , data =df)
+summary(modSexAge_fixed)
+print(round(summary(modSexAge_fixed)$r.squared,2))
+# Use anova to get f values 
+getPartialEtaSq(modSexAge_fixed)
+
+```
+
+
+### Model account for interaction between  Dx and Age
+```{r}
+modDxAge <- lmer(BrainPAD ~ Dx + Age + Sex   +  Dx*Age   + (1 | Site), data = df) 
+summary(modDxAge)
+ 
+#linear model with only fixed effects 
+modDxAge_fixed <- lm(BrainPAD ~    Dx+ Age + Sex  +  Dx*Age + Site , data =df)
+summary(modDxAge_fixed)
+print(round(summary(modDxAge_fixed)$r.squared,2))
+# Use anova to get f values 
+getPartialEtaSq(modDxAge_fixed)
+
+```
+
+```{r} 
+modDxAge <- lmer(BrainPAD ~ Dx + Sex +  Age  + (Dx*Age) + (1 | Site) , data = df) # remvove Sex*Age and Dx*Sex
+anova(modDxAgeSexNoThreeWay, modDxAgeSexFull, test= "chisq")    
+anova(modNoDxSex, modDxAgeSexNoThreeWay, test= "chisq") # remove Dx*Sex 
+```
+
+### EMMs of  Dx extracted from the final model after stepwise selection
+```{r}
+# estimated marginal means for Dx group
+emm.s <- emmeans(modNoDxSex, specs = pairwise ~ Dx) 
+Means = round(as.data.frame(emm.s$emmeans), 2)
+Means
+# The EMM of BrainPADs is -0.95 (SE 0.68, CI: -2.34 - 0.44), for HC and
+# +1.42  years (SE 0.66,  CI: 0.05 - 2.78) for BD individuals.  
+# Create a data frame for plotting
+plot_data <- as.data.frame(emm.s$emmeans)
+
+# Define custom order for x-axis
+custom_order <- c('HC', 'BD')
+
+jpeg(filename = paste0('figures/', 'compare_emmeans_HC_BD.jpeg'), width=600, height=600)
+
+# Create the ggplot with a similar visual style
+ ggplot(plot_data, aes(x = emmean, y = Dx, xmin = lower.CL, xmax = upper.CL)) +
+  geom_vline(xintercept = 0, color = "gray70", linetype = "dashed", size = 0.5) +
+  geom_point(size = 4, color = "red") +
+  geom_errorbarh(height = 0.15) +
+  labs(x = "Brain-PAD (years)", y = "") +
+  scale_x_continuous(limits = c(-3, 3), breaks = seq(-3, 3, by = 1), expand = c(0.01, 0.01)) +
+  scale_y_discrete(limits = custom_order, labels = c('HC\nN=1342', 'BD\nN=1577')) +
+  theme_minimal() 
+dev.off() 
+```
+ 
+ 
+
+## BD ONLY ANALYSIS
+### Full Model with AntiEpileptic, Li, BDI and Gen2AntiPsychotics
+```{r}
+m1 <- lmer(BrainPAD ~    Age + Sex  + AntiEpileptic + Li+BDI+ Gen2AntiPsych + (1 | Site), data =BD_only) 
+# Table 1 in paper: Model with all significant clinical variables within BD only
+summary(m1)  
+
+BD_only
+```
+
+```{r}
+#linear model with only fixed effects
+m1_fixed <- lm(BrainPAD ~    Age + Sex  + AntiEpileptic + Li+BDI+ Gen2AntiPsych + Site, data =BD_only)
+summary(m1_fixed)
+print(round(summary(m1_fixed)$r.squared,2))
+# Use anova to get f values 
+getPartialEtaSq(m1_fixed)
+``` 
+
+### Fit each clinical variable respectively with the baseline model 
+```{r}
+# Bipolar I
+mod <- lmer(BrainPAD ~   Age + Sex  + BDI + (1 | Site)  , data = BD_only)   
+summary(mod)  
+# 11.74/(11.74 + 68.72)
+emm.s <- emmeans(mod, specs = pairwise ~ BDI)
+round(as.data.frame(emm.s$emmeans), 2) 
+```
+
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex  + BDI + (1 | Site)
+           , data = BD_only)
+summary(mod) 
+emm.s <- emmeans(mod, specs = pairwise ~ BDI)
+print(round(as.data.frame(emm.s$emmeans), 2))
+pvalBDI<- getClinVarCoeff(mod)
+
+mod_fixed <- lm(BrainPAD ~   Sex + Age   + BDI + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed) 
+```
+
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex  + Li + (1 | Site)
+           , data = BD_only)
+summary(mod)
+emm.s <- emmeans(mod, specs = pairwise ~ Li)
+print(round(as.data.frame(emm.s$emmeans), 2))
+pvalLi<- getClinVarCoeff(mod)
+
+```
+
+```{r }
+mod_fixed <- lm(BrainPAD ~    Sex + Age  + Li + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed)  
+mod_fixed
+
+``` 
+
+```{r}
+mod <- lmer(BrainPAD ~    Age + Sex   + AntiEpileptic + (1 | Site)
+           , data =BD_only) 
+summary(mod) # p-values and beta coeff 
+```
+
+```{r}
+AntiE <- getClinVarCoeff(mod)
+
+emm.s <- emmeans(mod, specs = pairwise ~ AntiEpileptic)
+round(as.data.frame(emm.s$emmeans), 2) # EMMs
+  
+pvalAntiEpileptic <- getClinVarCoeff(mod) 
+```
+
+```{r}
+mod_fixed <- lm(BrainPAD ~   Sex + Age   + AntiEpileptic + Site
+           , data = BD_only) 
+getPartialEtaSq(mod_fixed) 
+
+```
+ 
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex + Gen2AntiPsych + (1 | Site)
+           , data = BD_only)  
+summary(mod) 
+emm.s <- emmeans(mod, specs = pairwise ~ Gen2AntiPsych)
+round(as.data.frame(emm.s$emmeans), 2)
+pvalGen2AntiPsych <- getClinVarCoeff(mod)
+
+```
+
+```{r}
+mod_fixed <- lm(BrainPAD ~    Sex + Age   + Gen2AntiPsych + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed) 
+```
+
+
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex  + Gen1AntiPsych + (1 | Site) , data = BD_only)  
+summary(mod)
+emm.s <- emmeans(mod, specs = pairwise ~ Gen1AntiPsych)
+round(as.data.frame(emm.s$emmeans), 2)
+  
+pvalGen1AntiPsych <- getClinVarCoeff(mod)
+```
+
+```{r}
+mod_fixed <- lm(BrainPAD ~   Sex + Age  + Gen1AntiPsych + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed) 
+```
+
+
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex  + AntiDep + (1 | Site), data =  BD_only) 
+summary(mod)  
+emm.s <- emmeans(mod, specs = pairwise ~ AntiDep)
+round(as.data.frame(emm.s$emmeans), 2)
+ 
+pvalAntiDep <- getClinVarCoeff(mod)
+ 
+```
+
+```{r}
+mod_fixed <- lm(BrainPAD ~    Sex + Age   + AntiDep + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed) 
+mod_fixed
+```
+
+
+```{r}
+# (b = -0.09, p = 0.90, ηp² = 0.007)
+mod <- lmer(BrainPAD ~  Age + Sex + Euthymic + (1 | Site)
+           , data= BD_only) 
+summary(mod) 
+
+emm.s <- emmeans(mod, specs = pairwise ~ Euthymic)
+round(as.data.frame(emm.s$emmeans), 2) 
+
+ 
+
+
+pvalEuthymic <- getClinVarCoeff(mod)
+
+```
+
+```{r}
+mod_fixed <- lm(BrainPAD ~   Sex + Age  + Euthymic + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed) 
+```
+
+
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex  + HistoryPsychosis + (1 | Site)
+           , data =BD_only)  
+emm.s <- emmeans(mod, specs = pairwise ~ HistoryPsychosis)
+round(as.data.frame(emm.s$emmeans), 2)
+ 
+
+pvalHistoryPsychosis <- getClinVarCoeff(mod)
+pvalHistoryPsychosis
+```
+ 
+```{r} 
+mod_fixed <- lm(BrainPAD ~   Sex +Age + HistoryPsychosis + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed) 
+```
+ 
+
+```{r}
+mod <- lmer(BrainPAD ~   Age + Sex   + AgeofOnset + (1 | Site)
+           , data =  BD_only) 
+pvalAgeofOnset <- getClinVarCoeff(mod)
+pvalAgeofOnset
+summary(mod)
+```
+
+```{r}
+mod_fixed <- lm(BrainPAD ~   Age + Sex  + AgeofOnset + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed)
+```
+### BH corrected p-values to adjust for false discovery rates
+```{r}
+pvalues_df <- rbind(pvalBDI, pvalLi, pvalAntiEpileptic,  pvalGen2AntiPsych, pvalGen1AntiPsych, pvalEuthymic, pvalAntiDep ,  pvalHistoryPsychosis,  pvalAgeofOnset	)
+pvalues <- pvalues_df$`Pr(>|t|)` 
+print(pvalues)
+round(pvalues, 2)
+print(p.adjust(pvalues,method="BH"))  
+round(p.adjust(pvalues,method="BH"), 4)
+
+pvalues
+# pvalBDI, pvalLi, pvalAntiEpileptic,  pvalGen2AntiPsych,
+```
+
+### Model with Mood State collapsed into three levels 
+```{r}
+BD_only <- df %>% filter(Dx==1) 
+BD_only <-unlabelled(BD_only) %>% group_by(MoodState) %>% dplyr::select(BrainPAD, MoodState, Age, Age2, Age3, Sex, Site) %>% na.omit()  #%>% tally() 
+
+BD_only <-  (BD_only) %>% mutate(EuthDepOther =
+                  case_when(
+                    MoodState == "Euthymic"  ~ 0,
+                    MoodState == "Depressed"  ~ 1,
+                    MoodState == "Manic"    ~ 2,
+                    MoodState == "Mixed" ~ 2,
+                    MoodState == "Hypomanic" ~2 ))  %>% mutate(EuthDepOther = as.factor(EuthDepOther)) 
+
+BD_only %>% group_by(EuthDepOther)%>% tally() 
+
+
+```
+
+
+### Violin plots Mood State collapsed into three levels 
+```{r}
+
+brainPADs <- BD_only%>% 
+  filter( !is.na(EuthDepOther)) %>%
+  group_by(EuthDepOther) %>% 
+  dplyr::summarize( brainPAD_mean = round(mean(BrainPAD), 2),
+                    , count = sum(EuthDepOther))  
+
+jpeg(filename = paste0('figures/', 'MoodStateCollapsed.jpeg'), width=600, height=600)
+BD_only %>% 
+  dplyr::select(BrainPAD, EuthDepOther) %>% 
+   reshape2::melt(id.vars = c("EuthDepOther", "BrainPAD")) %>% 
+  na.omit() %>% 
+  ggplot(mapping = aes(x = factor(EuthDepOther), y = BrainPAD, fill = factor(EuthDepOther))) +
+  ylim(-45, 45) +
+  geom_violin(alpha = 0.3) +
+  theme_classic()  +stat_summary(fun = "mean",
+               geom = "crossbar", 
+               width = 0.5,
+               colour = "red", size = 0.25)  + theme(
+  axis.title.x = element_text(size = 20),
+  plot.title = element_text(size = 20, face = "bold"),
+  axis.title.y = element_text(size = 20),
+  axis.text.x=element_text(size=18),
+  axis.text.y=element_text(size=18))   + theme(legend.position = "none") +
+  scale_x_discrete(labels = c("Euthymic", "Depressed", "Any Mania"))  + xlab("Mood State") + 
+  geom_label(data = brainPADs, aes(x = factor(EuthDepOther), y = brainPAD_mean, label = paste(brainPAD_mean, "\nN=", count)), alpha= 0.2, nudge_x = 0, nudge_y = 40, size = 6) 
+dev.off()
+```
+
+```{r} 
+mod_EuthDepOther <- lmer(BrainPAD ~   Age + Sex  +  EuthDepOther  + (1 | Site) , data = BD_only )
+#summary(mod_EuthDepOther)
+# Calculate emmeans
+emmeans_obj <- emmeans(mod_EuthDepOther, specs = pairwise ~"EuthDepOther")
+
+(emmeans_obj)
+ 
+
+
+```
+```{r}
+mod_fixed <- lm(BrainPAD ~   Age + Sex  + EuthDepOther + Site
+           , data = BD_only)
+getPartialEtaSq(mod_fixed)   
+```
+ 
+# PredictInterval is not relevant for us
+```{r}
+# Prediction of response values using new data, based on distributions of params of the model
+# uses arm::sim function
+#predictInterval(mod)   # for various model predictions, possibly with new data
+```
+```{r}
+# NOT RELEVANT SINCE DX*Sex is not sig
+# ### EMMs of Sex by Dx extracted from first basic model
+# perform pairwise comparisons between the 4 different combinations of sex and diagnosis using the EMMs
+# See table X for the EMMs for each group
+# emm.s <- emmeans(mod, specs = pairwise ~ Dx:Sex) 
+# Means = round(as.data.frame(emm.s$emmeans), 2)
+# 
+# # Men (+2.37 years; p <0.0001) and women (+2.37 years; p <0.0001) with BD had significantly higher EMM of brainPAD compared to their healthy counterparts
+
+# effects associated with Site are uncorrelated with the means of the fixed effects (Dx, Age)
+# residual plot
+# plot(mod, resid(., type = "pearson") ~ fitted(.),
+#      abline = 0, pch = 20, cex = .8, id = 0.05,
+#      xlab = "Ftted values", ylab = "Pearson Residuals")
+ 
+``` 
+ 
+
+```{r} 
+df$DurationIll = df$Age-df$AgeofOnset
+ggplot(df, aes(x = AgeofOnset)) + 
+  geom_histogram(aes(y = ..density..), binwidth = 2, color = "black", fill = "white") + 
+  geom_density(alpha = .2, fill = "#FF6666") + 
+  ggtitle("Distribution of X") + 
+  xlab("X") + theme_classic()
+  ylab("Density")   
+  
+df %>% filter(!is.na(AgeofOnset)) %>%  filter( 0< (AgeofOnset))  %>% 
+  summarise(mean = mean(AgeofOnset), sd = sd(AgeofOnset), min = min(AgeofOnset))
+ 
+df %>% filter(!is.na(DurationIll)) %>%# 22.27, 9
+  summarise(mean = mean(DurationIll), sd = sd(DurationIll)) 
+ 
+
+ggplot(df, aes(x = DurationIll)) + 
+  geom_histogram(aes(y = ..density..), binwidth = 2, color = "black", fill = "white") + 
+  geom_density(alpha = .2, fill = "#FF6666") + 
+  ggtitle("Distribution of X") + 
+  xlab("X") + theme_classic()
+  ylab("Density") 
+```

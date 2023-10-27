@@ -1,0 +1,131 @@
+---
+title: "R Notebook"
+output: html_notebook
+--- 
+```{r}
+
+libraries <- c("dplyr", "tidyverse", "DescTools", "ggplot2", "readxl", "lme4"
+               , "ModelMetrics", "merTools", "lmtest", "emmeans", "haven", "lmerTest"
+               , "metaforest", "rstatix")
+#require(libraries)
+lapply(libraries, require, character.only = TRUE)
+library(haven) 
+library(ggplot2)
+library(readxl) 
+library(performance)
+library(lme4)
+ 
+library("merTools")
+library(ggpubr) 
+library(dplyr)
+setwd("C:/Users/hxng/OneDrive - UC San Diego/brainlab/ENIGMAbrainAGE/General")
+path = file.path( "Master_BD_080720_withPredictions_withNewHajek_fixed.sav")
+df = read_sav(path)
+df <- df %>% 
+  mutate_if(is.character, list(~na_if(.,""))) %>%
+  filter(!SubjID %in%  c('con_11',  'pat_13')) %>%
+  arrange(Site) 
+siteLoc <- read_excel("DescriptiveData_080720_2.xlsx", sheet=3)
+replaceSpace <- function(dataframe) {
+  gsub(x = names(dataframe), pattern = " ", replacement = "_") 
+} 
+
+names(siteLoc) <- replaceSpace(siteLoc)
+names(df) <- replaceSpace(df) 
+
+# merge the main dataset with the Site Location
+df <- merge(df, siteLoc, by=c("PIName","Site"  )) 
+df <- df %>% 
+  filter(Age <= 75  & Age  >=18) 
+BD_only <- df %>% filter(Dx==1) 
+
+clinical_var_names <- colnames(df[,12:21])
+clinvar <- df %>% 
+  dplyr::select(all_of(c(clinical_var_names)))%>%
+  dplyr:: select(-c("MoodState"))  
+
+ 
+runLMM <- function(var) {
+  other_vars <-as.list(colnames(clinvar))
+  names(other_vars) <- as.list(other_vars)
+  other_vars <-other_vars[!names(other_vars) %in% c(var)!=FALSE]
+  print(var)
+  for (x in other_vars){  
+    m1 <-lmer(paste(var,"~", x ,"+(1 | Site)"), data = BD_only)
+    
+    print(coef(summary(m1)))
+  } 
+}
+
+runLMM("Li") 
+#                 Estimate Std. Error       df  t value     Pr(>|t|)
+# AntiEpileptic -0.1652298 0.02539945 1350.66131 -6.505251  1.089706e-10
+# Euthymic       0.1114182 0.03971748 506.96288   2.805270  5.220592e-03
+# BDI            0.1679869 0.03045332 1307.42655 5.516211   4.170687e-08
+clinical_var_names
+# Which of those captures the most variability?
+# Univariate -> all in same model 
+```
+
+```{r}
+runLMM("BDI")
+
+#               Estimate Std. Error         df   t value     Pr(>|t|) 
+# Li          0.1181298 0.02212546   1420.83106  5.339089     1.086290e-07
+# Gen2AntiPsych 0.1443512 0.02261114  1331.30670  6.384073   2.376187e-10
+# AntiDep     -0.05144887 0.02311184  1335.23047 -2.226082   2.617504e-02
+# HistoryPsychosis 0.3982520 0.02406344 1158.27752 16.55009 2.183577e-55
+
+```
+
+
+
+```{r}
+runLMM("Gen1AntiPsych")
+# HistoryPsychosis 0.04042329 0.01581569 1059.40380 2.555897 0.01073008
+
+```
+```{r}
+runLMM("Gen2AntiPsych")
+# BDI         0.2082578 0.03158705 1241.7032 6.593140 6.352735e-11 ***
+
+# AntiEpileptic 0.05132376 0.02595086 1329.04580 1.977729 4.816561e-02 **
+
+# HistoryPsychosis 0.1915124 0.02977132 1070.56919 6.432779 1.885316e-10 ***
+
+```
+
+```{r}
+runLMM("AntiDep")
+# BDI         -0.06959502 0.03159498 1253.97083 -2.202724 2.779561e-02
+# AntiEpileptic 0.1212818 0.02551394 1330.80024 4.753549 2.215899e-06
+# HistoryPsychosis -0.07903672 0.03006045 1075.46473 -2.629260 8.679168e-03
+
+```
+
+```{r}
+runLMM("AntiEpileptic")
+# Li          -0.1821312 0.02821883 1352.86487 -6.454244 1.511692e-10
+# Gen2AntiPsych 0.05978512 0.02882466 1324.90766 2.074096 3.826312e-02
+# AntiDep     0.1386698 0.02890481 1327.79227 4.797466 1.788421e-06
+# HistoryPsychosis 0.07228085 0.03217482 1056.18074 2.246503 2.487774e-02
+
+```
+
+```{r}
+runLMM("Euthymic") #NS
+```
+
+```{r}
+runLMM("AgeofOnset") #NS
+```
+```{r}
+runLMM("HistoryPsychosis")
+
+#                 Estimate Std. Error         df   t value     Pr(>|t|)
+# BDI         0.4805337 0.02899012 1155.04061 16.575775 1.600431e-55
+# AntiEpileptic 0.05659475 0.02794506 1092.56315 2.025215 4.308806e-02
+# Gen1AntiPsych 0.1367597 0.05832571 1072.73804 2.344758 1.922100e-02
+# Gen2AntiPsych 0.1907157 0.02971772 1081.01640 6.417577 2.067843e-10
+# AntiDep     -0.07907566 0.03015202 1087.50142 -2.622566 8.849026e-03
+```
